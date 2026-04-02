@@ -1,22 +1,26 @@
 import Cookie from "../cookie/cookie.js";
 
 import { extract, normalizeURL } from "../url.js";
-import { genericUserAgent } from "../../config.js";
-import { updateCookie } from "../cookie/manager.js";
+import { fetchWithBackoff } from "../../misc/utils.js";
+import { getRandomUserAgent, getRandomAcceptLanguage } from "../../config.js";
+import { getCookie, updateCookie } from "../cookie/manager.js";
 import { createStream } from "../../stream/manage.js";
 import { convertLanguageCode } from "../../misc/language-codes.js";
+import { randomizeCiphers } from "../../misc/randomize-ciphers.js";
 
 const shortDomain = "https://vt.tiktok.com/";
 
 export default async function(obj) {
-    const cookie = new Cookie({});
+    randomizeCiphers();
+    const cookie = getCookie('tiktok') ?? new Cookie({});
     let postId = obj.postId;
 
     if (!postId) {
         let html = await fetch(`${shortDomain}${obj.shortLink}`, {
             redirect: "manual",
+            dispatcher: obj.dispatcher,
             headers: {
-                "user-agent": genericUserAgent.split(' Chrome/1')[0]
+                "user-agent": getRandomUserAgent().split(' Chrome/1')[0]
             }
         }).then(r => r.text()).catch(() => {});
 
@@ -33,9 +37,12 @@ export default async function(obj) {
     if (!postId) return { error: "fetch.short_link" };
 
     // should always be /video/, even for photos
-    const res = await fetch(`https://www.tiktok.com/@i/video/${postId}`, {
+    const res = await fetchWithBackoff(`https://www.tiktok.com/@i/video/${postId}`, {
+        dispatcher: obj.dispatcher,
         headers: {
-            "user-agent": genericUserAgent,
+            "user-agent": getRandomUserAgent(),
+            "accept-language": getRandomAcceptLanguage(),
+            "accept-encoding": "gzip, deflate, br, zstd",
             cookie,
         }
     })

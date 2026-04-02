@@ -77,3 +77,16 @@ export function isURL(input) {
         return false;
     }
 }
+
+const RETRYABLE_STATUSES = new Set([429, 500, 502, 503, 504]);
+
+export async function fetchWithBackoff(url, options = {}, maxRetries = 3) {
+    let attempt = 0;
+    while (true) {
+        const res = await fetch(url, options);
+        if (!RETRYABLE_STATUSES.has(res.status) || attempt >= maxRetries) return res;
+        const delay = (2 ** attempt) * 1000 + Math.floor(Math.random() * 500);
+        await new Promise(r => setTimeout(r, delay));
+        attempt++;
+    }
+}

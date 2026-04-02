@@ -7,6 +7,8 @@ import { testers } from "./service-patterns.js";
 import matchAction from "./match-action.js";
 
 import { friendlyServiceName } from "./service-alias.js";
+import { getCachedResult, setCachedResult } from "../store/result-cache.js";
+import { instagramQueue, tiktokQueue } from "../misc/request-queue.js";
 
 import bilibili from "./services/bilibili.js";
 import reddit from "./services/reddit.js";
@@ -63,6 +65,50 @@ export default async function({ host, patternMatch, params, authType }) {
                 context: {
                     service: friendlyServiceName(host),
                 }
+            });
+        }
+
+        const cacheKey = [
+            host,
+            JSON.stringify(patternMatch),
+            params.videoQuality ?? '',
+            params.downloadMode ?? '',
+            params.audioFormat ?? '',
+            params.subtitleLang ?? '',
+            params.allowH265 ? '1' : '0',
+            params.tiktokFullAudio ? '1' : '0',
+            params.alwaysProxy ? '1' : '0',
+        ].join(':');
+
+        const cachedR = getCachedResult(cacheKey);
+        if (cachedR) {
+            let cachedIsAudioOnly = params.downloadMode === "audio";
+            let cachedIsAudioMuted = params.downloadMode === "mute";
+            if (cachedR.isAudioOnly) {
+                cachedIsAudioOnly = true;
+                cachedIsAudioMuted = false;
+            }
+
+            let cachedLocalProcessing = params.localProcessing;
+            const lpEnvC = env.forceLocalProcessing;
+            const shouldForceLocalC = lpEnvC === "always" || (lpEnvC === "session" && authType === "session");
+            if (shouldForceLocalC && (!cachedLocalProcessing || cachedLocalProcessing === "disabled")) {
+                cachedLocalProcessing = "preferred";
+            }
+
+            return matchAction({
+                r: cachedR,
+                host,
+                audioFormat: params.audioFormat,
+                isAudioOnly: cachedIsAudioOnly,
+                isAudioMuted: cachedIsAudioMuted,
+                disableMetadata: params.disableMetadata,
+                filenameStyle: params.filenameStyle,
+                convertGif: params.convertGif,
+                requestIP,
+                audioBitrate: params.audioBitrate,
+                alwaysProxy: params.alwaysProxy || cachedLocalProcessing === "forced",
+                localProcessing: cachedLocalProcessing,
             });
         }
 
@@ -146,7 +192,7 @@ export default async function({ host, patternMatch, params, authType }) {
                 break;
 
             case "tiktok":
-                r = await tiktok({
+                r = await tiktokQueue.run(() => tiktok({
                     postId: patternMatch.postId,
                     shortLink: patternMatch.shortLink,
                     fullAudio: params.tiktokFullAudio,
@@ -154,7 +200,8 @@ export default async function({ host, patternMatch, params, authType }) {
                     h265: params.allowH265,
                     alwaysProxy: params.alwaysProxy,
                     subtitleLang,
-                });
+                    dispatcher,
+                }));
                 break;
 
             case "tumblr":
@@ -185,12 +232,12 @@ export default async function({ host, patternMatch, params, authType }) {
                 break;
 
             case "instagram":
-                r = await instagram({
+                r = await instagramQueue.run(() => instagram({
                     ...patternMatch,
                     quality: params.videoQuality,
                     alwaysProxy: params.alwaysProxy,
                     dispatcher
-                })
+                }));
                 break;
 
             case "pinterest":
@@ -280,6 +327,10 @@ export default async function({ host, patternMatch, params, authType }) {
                 return createResponse("error", {
                     code: "error.api.service.unsupported"
                 });
+        }
+
+        if (!r.error) {
+            setCachedResult(cacheKey, r);
         }
 
         if (r.isAudioOnly) {

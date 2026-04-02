@@ -1,15 +1,17 @@
 import { randomBytes } from "node:crypto";
 import { resolveRedirectingURL } from "../url.js";
-import { genericUserAgent } from "../../config.js";
+import { fetchWithBackoff } from "../../misc/utils.js";
+import { getRandomUserAgent, getRandomAcceptLanguage } from "../../config.js";
 import { createStream } from "../../stream/manage.js";
 import { getCookie, updateCookie } from "../cookie/manager.js";
+import { randomizeCiphers } from "../../misc/randomize-ciphers.js";
 
-const commonHeaders = {
-    "user-agent": genericUserAgent,
+const getCommonHeaders = () => ({
+    "user-agent": getRandomUserAgent(),
     "sec-gpc": "1",
     "sec-fetch-site": "same-origin",
     "x-ig-app-id": "936619743392459"
-}
+})
 
 const mobileHeaders = {
     "x-ig-app-locale": "en_US",
@@ -23,21 +25,36 @@ const mobileHeaders = {
     "content-length": "0",
 }
 
-const embedHeaders = {
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
-    "Accept-Language": "en-GB,en;q=0.9",
-    "Cache-Control": "max-age=0",
-    "Dnt": "1",
-    "Priority": "u=0, i",
-    "Sec-Ch-Ua": 'Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99',
-    "Sec-Ch-Ua-Mobile": "?0",
-    "Sec-Ch-Ua-Platform": "macOS",
-    "Sec-Fetch-Dest": "document",
-    "Sec-Fetch-Mode": "navigate",
-    "Sec-Fetch-Site": "none",
-    "Sec-Fetch-User": "?1",
-    "Upgrade-Insecure-Requests": "1",
-    "User-Agent": genericUserAgent,
+const buildSecChUa = (ua) => {
+    const version = ua.match(/Chrome\/(\d+)/)?.[1] ?? '138';
+    return `"Chromium";v="${version}", "Google Chrome";v="${version}", "Not-A.Brand";v="99"`;
+}
+
+const getSecChUaPlatform = (ua) => {
+    if (ua.includes('Macintosh')) return 'macOS';
+    if (ua.includes('X11')) return 'Linux';
+    return 'Windows';
+}
+
+const getEmbedHeaders = () => {
+    const ua = getRandomUserAgent();
+    return {
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+        "Accept-Encoding": "gzip, deflate, br, zstd",
+        "Accept-Language": getRandomAcceptLanguage(),
+        "Cache-Control": "max-age=0",
+        "Dnt": "1",
+        "Priority": "u=0, i",
+        "Sec-Ch-Ua": buildSecChUa(ua),
+        "Sec-Ch-Ua-Mobile": "?0",
+        "Sec-Ch-Ua-Platform": getSecChUaPlatform(ua),
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "none",
+        "Sec-Fetch-User": "?1",
+        "Upgrade-Insecure-Requests": "1",
+        "User-Agent": ua,
+    };
 }
 
 const cachedDtsg = {
@@ -64,7 +81,7 @@ export default function instagram(obj) {
 
             const data = await fetch('https://www.instagram.com/', {
                 headers: {
-                    ...commonHeaders,
+                    ...getCommonHeaders(),
                     cookie
                 },
                 dispatcher
@@ -83,7 +100,7 @@ export default function instagram(obj) {
 
     async function request(url, cookie, method = 'GET', requestData) {
         let headers = {
-            ...commonHeaders,
+            ...getCommonHeaders(),
             'x-ig-www-claim': cookie?._wwwClaim || '0',
             'x-csrftoken': cookie?.values()?.csrftoken,
             cookie
@@ -92,7 +109,7 @@ export default function instagram(obj) {
             headers['content-type'] = 'application/x-www-form-urlencoded';
         }
 
-        const data = await fetch(url, {
+        const data = await fetchWithBackoff(url, {
             method,
             headers,
             body: requestData && new URLSearchParams(requestData),
@@ -110,7 +127,7 @@ export default function instagram(obj) {
         const oembedURL = new URL('https://i.instagram.com/api/v1/oembed/');
         oembedURL.searchParams.set('url', `https://www.instagram.com/p/${id}/`);
 
-        const oembed = await fetch(oembedURL, {
+        const oembed = await fetchWithBackoff(oembedURL, {
             headers: {
                 ...mobileHeaders,
                 ...( token && { authorization: `Bearer ${token}` } ),
@@ -123,7 +140,7 @@ export default function instagram(obj) {
     }
 
     async function requestMobileApi(mediaId, { cookie, token } = {}) {
-        const mediaInfo = await fetch(`https://i.instagram.com/api/v1/media/${mediaId}/info/`, {
+        const mediaInfo = await fetchWithBackoff(`https://i.instagram.com/api/v1/media/${mediaId}/info/`, {
             headers: {
                 ...mobileHeaders,
                 ...( token && { authorization: `Bearer ${token}` } ),
@@ -136,9 +153,9 @@ export default function instagram(obj) {
     }
 
     async function requestHTML(id, cookie) {
-        const data = await fetch(`https://www.instagram.com/p/${id}/embed/captioned/`, {
+        const data = await fetchWithBackoff(`https://www.instagram.com/p/${id}/embed/captioned/`, {
             headers: {
-                ...embedHeaders,
+                ...getEmbedHeaders(),
                 cookie
             },
             dispatcher
@@ -154,9 +171,9 @@ export default function instagram(obj) {
     }
 
     async function getGQLParams(id, cookie) {
-        const req = await fetch(`https://www.instagram.com/p/${id}/`, {
+        const req = await fetchWithBackoff(`https://www.instagram.com/p/${id}/`, {
             headers: {
-                ...embedHeaders,
+                ...getEmbedHeaders(),
                 cookie
             },
             dispatcher
@@ -215,11 +232,11 @@ export default function instagram(obj) {
     async function requestGQL(id, cookie) {
         const { headers, body } = await getGQLParams(id, cookie);
 
-        const req = await fetch('https://www.instagram.com/graphql/query', {
+        const req = await fetchWithBackoff('https://www.instagram.com/graphql/query', {
             method: 'POST',
             dispatcher,
             headers: {
-                ...embedHeaders,
+                ...getEmbedHeaders(),
                 ...headers,
                 cookie,
                 'content-type': 'application/x-www-form-urlencoded',
@@ -255,7 +272,7 @@ export default function instagram(obj) {
                 method: 'POST',
                 dispatcher,
                 headers: {
-                    ...embedHeaders,
+                    ...getEmbedHeaders(),
                     ...headers,
                     'content-type': 'application/x-www-form-urlencoded',
                     'X-Ig-D': 'www',
@@ -283,7 +300,7 @@ export default function instagram(obj) {
                 const rulingResponse = await fetch(rulingURL, {
                     headers: {
                         ...headers,
-                        ...commonHeaders
+                        ...getCommonHeaders()
                     },
                     dispatcher,
                 }).then(a => a.json()).catch(() => ({}));
@@ -413,7 +430,11 @@ export default function instagram(obj) {
         }
     }
 
+    const jitter = (min = 80, max = 350) =>
+        new Promise(resolve => setTimeout(resolve, min + Math.floor(Math.random() * (max - min))));
+
     async function getPost(id, alwaysProxy) {
+        randomizeCiphers();
         const hasData = (data) => data
                                     && data.gql_data !== null
                                     && data?.gql_data?.xdt_shortcode_media !== null;
@@ -436,9 +457,13 @@ export default function instagram(obj) {
             if (media_id && !hasData(data)) data = await requestMobileApi(media_id);
             if (media_id && cookie && !hasData(data)) data = await requestMobileApi(media_id, { cookie });
 
+            await jitter();
+
             // html embed (no cookie, cookie)
             if (!hasData(data)) data = await requestHTML(id);
             if (!hasData(data) && cookie) data = await requestHTML(id, cookie);
+
+            await jitter();
 
             // web app graphql api (no cookie, cookie)
             if (!hasData(data)) data = await requestGQL(id);
@@ -470,6 +495,7 @@ export default function instagram(obj) {
     }
 
     async function getStory(username, id) {
+        randomizeCiphers();
         const cookie = getCookie('instagram');
         if (!cookie) return { error: "link.unsupported" };
 

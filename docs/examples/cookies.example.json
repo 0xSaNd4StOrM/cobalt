@@ -16,5 +16,8 @@
     ],
     "vimeo": [
         "access_token=<replace_this>"
+    ],
+    "tiktok": [
+        "sessionid=<replace_this>; tt-target-idc=useast5; ttwid=<replace_this>"
     ]
 }

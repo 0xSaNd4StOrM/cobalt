@@ -14,6 +14,7 @@ const VALID_SERVICES = new Set([
     'twitter',
     'youtube',
     'vimeo_bearer',
+    'tiktok',
 ]);
 
 const invalidCookies = {};
